@@ -182,7 +182,7 @@ st.markdown(
         h1 {
             font-size: 1.35rem;
         }
-        /* Metric row: wrap into 2+2+1 instead of one cramped row */
+        /* Metric row: wrap; at least 2 cards per row on mobile */
         .block-container [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {
             display: flex !important;
             flex-wrap: wrap !important;
@@ -210,13 +210,6 @@ st.markdown(
         /* Sidebar overlay: full-width on very small screens */
         [data-testid="stSidebar"] {
             min-width: 280px;
-        }
-    }
-    /* Very narrow phones: metrics in a single column */
-    @media (max-width: 480px) {
-        .block-container [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > div {
-            min-width: 100% !important;
-            flex: 1 1 100% !important;
         }
     }
 </style>
@@ -423,6 +416,48 @@ def _workout_datetime(workout: Dict[str, Any]) -> Optional[pd.Timestamp]:
     return ts
 
 
+def _workout_duration_seconds(workout: Dict[str, Any]) -> float:
+    """
+    Get workout duration in seconds from API payload.
+    Tries: duration (seconds), then end_time - start_time.
+    """
+    # Explicit duration field (often in seconds)
+    dur = _first_present(workout, ("duration", "duration_seconds", "length"))
+    if dur is not None:
+        try:
+            sec = float(dur)
+            return max(0, sec)
+        except (TypeError, ValueError):
+            pass
+    start_raw = _first_present(workout, ("start_time", "startTime", "startedAt", "createdAt"))
+    end_raw = _first_present(workout, ("end_time", "endTime", "endedAt", "completedAt"))
+    if start_raw is not None and end_raw is not None:
+        try:
+            start_ts = pd.to_datetime(start_raw, errors="coerce")
+            end_ts = pd.to_datetime(end_raw, errors="coerce")
+            if pd.notna(start_ts) and pd.notna(end_ts):
+                delta = (end_ts - start_ts).total_seconds()
+                return max(0, delta)
+        except Exception:
+            pass
+    return 0.0
+
+
+def _format_duration_hours_min(total_seconds: float) -> str:
+    """Format seconds as 'x Hours y min' or 'x min' if under an hour."""
+    total_seconds = max(0, int(round(total_seconds)))
+    if total_seconds == 0:
+        return "0 min"
+    minutes = total_seconds // 60
+    if minutes < 60:
+        return f"{minutes} min"
+    hours = minutes // 60
+    mins = minutes % 60
+    if mins == 0:
+        return f"{hours} Hour" + ("s" if hours != 1 else "") + " 0 min"
+    return f"{hours} Hour{'s' if hours != 1 else ''} {mins} min"
+
+
 # Fetch all workouts. Trust API page_count when present; also stop when we get a short page.
 WORKOUTS_PER_PAGE = 50
 MAX_WORKOUT_PAGES = 500  # safety cap (~25k workouts)
@@ -566,10 +601,10 @@ def main() -> None:
             [str(n) for n in exercises_flat["exercise_title"].dropna().unique().tolist()]
         )
 
-        # Sidebar filters (reused for chart)
-        with st.sidebar:
-            st.markdown("---")
-            st.subheader("Filters")
+        # Filters above the cards (main area)
+        st.markdown("#### Filters")
+        filter_col1, filter_col2 = st.columns(2)
+        with filter_col1:
             period = st.selectbox(
                 "Time period",
                 options=[
@@ -584,12 +619,14 @@ def main() -> None:
                 index=2,
                 key="time_period",
             )
+        with filter_col2:
             selected = st.selectbox(
                 "Exercise",
                 options=["All"] + exercise_names,
                 index=0,
                 key="exercise_filter",
             )
+        st.markdown("")
 
         # Apply period filter (this / last week / month / year or all)
         now_utc = pd.Timestamp.now(tz="UTC")
@@ -737,8 +774,22 @@ def main() -> None:
 
             # Dips: all types (bench, tricep, chest, ring, weighted, barres parallèles, etc.)
             DIPS_PATTERN = r"dip|parallèle|parallel bar"
+            # Workout duration (seconds) per workout_id from raw payloads
+            workout_duration_seconds: Dict[Any, float] = {}
+            for w in raw_workouts:
+                wid = w.get("id")
+                if wid is not None:
+                    workout_duration_seconds[wid] = _workout_duration_seconds(w)
+
             n_workouts_now = current_df["workout_id"].nunique()
             n_workouts_prior = prior_df["workout_id"].nunique()
+            current_wids = current_df["workout_id"].dropna().unique()
+            prior_wids = prior_df["workout_id"].dropna().unique()
+            duration_now_sec = sum(workout_duration_seconds.get(wid, 0) for wid in current_wids)
+            duration_prior_sec = sum(workout_duration_seconds.get(wid, 0) for wid in prior_wids)
+            time_display = _format_duration_hours_min(duration_now_sec)
+            delta_duration = None if period == "All" else _pct_vs_prior(duration_prior_sec, duration_now_sec, period_label)
+
             pullups_now = _reps_for(current_df, "traction|pullup")
             pullups_prior = _reps_for(prior_df, "traction|pullup")
             dips_now = _reps_for(current_df, DIPS_PATTERN)
@@ -756,16 +807,18 @@ def main() -> None:
             delta_total = None if period == "All" else _pct_vs_prior(total_prior, total_now, period_label)
 
             st.markdown("#### Overview")
-            m1, m2, m3, m4, m5 = st.columns(5)
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
             with m1:
                 st.metric("Workouts", n_workouts_now, delta_workouts)
             with m2:
-                st.metric("Pullups", pullups_now, delta_pullups)
+                st.metric("Time", time_display, delta_duration)
             with m3:
-                st.metric("Dips", dips_now, delta_dips)
+                st.metric("Pullups", pullups_now, delta_pullups)
             with m4:
-                st.metric("Leg raises", leg_raises_now, delta_leg_raises)
+                st.metric("Dips", dips_now, delta_dips)
             with m5:
+                st.metric("Leg raises", leg_raises_now, delta_leg_raises)
+            with m6:
                 st.metric("Total reps", total_now, delta_total)
 
             st.markdown("")
