@@ -20,7 +20,7 @@ st.set_page_config(
     page_title="Hevy Dashboard",
     page_icon="💪",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # Load .env so HEVY_API_KEY can be stored locally in a file
@@ -172,6 +172,53 @@ st.markdown(
     }
 
     a { color: #60a5fa; }
+
+    /* ——— Mobile-friendly (max-width 768px) ——— */
+    @media (max-width: 768px) {
+        .block-container {
+            padding: 1rem 1rem 2rem;
+            max-width: 100%;
+        }
+        h1 {
+            font-size: 1.35rem;
+        }
+        /* Metric row: wrap into 2+2+1 instead of one cramped row */
+        .block-container [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            gap: 0.5rem;
+        }
+        .block-container [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > div {
+            min-width: calc(50% - 0.25rem) !important;
+            flex: 1 1 calc(50% - 0.25rem) !important;
+        }
+        [data-testid="stMetric"] {
+            padding: 0.75rem 1rem;
+        }
+        [data-testid="stMetric"] [data-testid="stMetricValue"] {
+            font-size: 1.35rem;
+        }
+        /* Touch-friendly buttons and controls (min ~44px) */
+        .stButton > button {
+            min-height: 44px;
+            padding: 0.6rem 1rem;
+            font-size: 0.85rem;
+        }
+        div[data-baseweb="select"] > div {
+            min-height: 44px;
+        }
+        /* Sidebar overlay: full-width on very small screens */
+        [data-testid="stSidebar"] {
+            min-width: 280px;
+        }
+    }
+    /* Very narrow phones: metrics in a single column */
+    @media (max-width: 480px) {
+        .block-container [data-testid="stHorizontalBlock"]:has([data-testid="stMetric"]) > div {
+            min-width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+    }
 </style>
 """,
     unsafe_allow_html=True,
@@ -820,7 +867,7 @@ def main() -> None:
                             y=alt.Y("reps", title="Reps"),
                             color=alt.Color(
                                 "exercise",
-                                legend=alt.Legend(title="Exercise", labelColor="#e5e7eb", titleColor="#e5e7eb"),
+                                legend=alt.Legend(title="Exercise", orient="top", labelColor="#e5e7eb", titleColor="#e5e7eb"),
                                 scale=alt.Scale(range=["#3b82f6", "#0d9488", "#475569", "#0f766e", "#1e40af"]),
                             ),
                         )
