@@ -14,6 +14,7 @@ from hevy_client import (
     get_api_key as get_env_api_key,
     get_user_info,
     get_workouts,
+    get_workout_by_id,
 )
 
 
@@ -408,6 +409,24 @@ def _set_reps(set_obj: Dict[str, Any]) -> int:
         return 0
 
 
+def _set_volume_kg(set_obj: Dict[str, Any], bodyweight_kg: float = 0) -> float:
+    """
+    Volume for one set = weight_kg × reps.
+    Uses set's weight_kg (or weightKg, load, etc.); if missing or 0, uses bodyweight_kg.
+    """
+    reps = _set_reps(set_obj)
+    if reps <= 0:
+        return 0.0
+    weight = _first_present(set_obj, ("weight_kg", "weightKg", "weight", "load"))
+    try:
+        weight_kg = float(weight) if weight is not None else bodyweight_kg
+    except (TypeError, ValueError):
+        weight_kg = bodyweight_kg
+    if weight_kg <= 0:
+        weight_kg = bodyweight_kg
+    return weight_kg * reps
+
+
 def _set_completed(set_obj: Dict[str, Any]) -> bool:
     """
     Determine whether a set should be counted.
@@ -523,6 +542,34 @@ def fetch_user_and_workouts(api_key: str) -> Dict[str, Any]:
         if got_short_page and (page_count is None or page >= page_count):
             break
 
+    # Enrich workouts with full details (list endpoint may omit set weight_kg/reps)
+    def _workout_has_set_data(w: Dict[str, Any]) -> bool:
+        for ex in w.get("exercises") or []:
+            for s in ex.get("sets") or []:
+                if not isinstance(s, dict):
+                    continue
+                reps = _first_present(s, ("reps", "repCount"))
+                weight = _first_present(s, ("weight_kg", "weightKg", "weight", "load"))
+                if reps is not None or weight is not None:
+                    return True
+        return False
+
+    enriched: List[Dict[str, Any]] = []
+    for w in all_workouts:
+        wid = w.get("id")
+        if wid and not _workout_has_set_data(w):
+            try:
+                full = get_workout_by_id(api_key, wid)
+                if isinstance(full, dict):
+                    enriched.append(full)
+                else:
+                    enriched.append(w)
+            except Exception:
+                enriched.append(w)
+        else:
+            enriched.append(w)
+    all_workouts = enriched
+
     workouts_raw = {**first, "workouts": all_workouts}
     df = pd.json_normalize(all_workouts) if all_workouts else pd.DataFrame()
 
@@ -606,6 +653,31 @@ def main() -> None:
     st.markdown(f'*"{quote}"* — **{name}**')
     st.caption("Workout volume and trends from Hevy")
 
+    # Bodyweight (kg) for volume when set has no weight (bodyweight exercises)
+    bodyweight_kg = 0.0
+    if isinstance(user, dict):
+        bw = _first_present(
+            user,
+            ("weight", "body_weight", "bodyWeight", "bodyweight", "weight_kg", "mass"),
+        )
+        if bw is not None:
+            try:
+                bodyweight_kg = float(bw)
+            except (TypeError, ValueError):
+                pass
+        if bodyweight_kg <= 0 and isinstance(user.get("profile"), dict):
+            bw = _first_present(
+                user["profile"],
+                ("weight", "body_weight", "bodyWeight", "weight_kg"),
+            )
+            if bw is not None:
+                try:
+                    bodyweight_kg = float(bw)
+                except (TypeError, ValueError):
+                    pass
+    if bodyweight_kg <= 0:
+        bodyweight_kg = 62.0  # default for bodyweight exercises when API has no weight
+
     exercise_rows: List[Dict[str, Any]] = []
     for w in raw_workouts:
         w_id = w.get("id")
@@ -619,24 +691,46 @@ def main() -> None:
         for ex in exercises:
             if not isinstance(ex, dict):
                 continue
-            # Compute total reps for this exercise across all its sets
+            exercise_title = ex.get("title") or "Unknown"
+            is_leste = "leste" in (exercise_title or "").strip().lower()
+            # Compute total reps and total volume (weight_kg × reps) for this exercise
             total_reps = 0
+            total_volume = 0.0
+            weight_kg_per_set: List[Any] = []
             for s in ex.get("sets") or []:
                 if not isinstance(s, dict):
                     continue
-                reps = s.get("reps")
+                reps_val = _set_reps(s)
+                total_reps += reps_val
+                raw_kg = _first_present(s, ("weight_kg", "weightKg", "weight", "load"))
                 try:
-                    total_reps += int(reps) if reps is not None else 0
+                    lest_kg = float(raw_kg) if raw_kg is not None else 0.0
                 except (TypeError, ValueError):
-                    continue
+                    lest_kg = 0.0
+                if is_leste:
+                    # Leste: (bodyweight + lest) × reps
+                    load_kg = bodyweight_kg + lest_kg
+                    set_vol = load_kg * reps_val
+                    weight_kg_per_set.append(f"bw+lest({bodyweight_kg}+{lest_kg})")
+                else:
+                    set_vol = _set_volume_kg(s, bodyweight_kg)
+                    weight_kg_per_set.append(raw_kg if raw_kg is not None else f"bw({bodyweight_kg})")
+                total_volume += set_vol
 
             row: Dict[str, Any] = {
                 "workout_id": w_id,
                 "workout_title": w_title,
                 "workout_start_time": w_start,
-                "exercise_title": ex.get("title"),
+                "exercise_title": exercise_title,
                 "exercise_total_reps": total_reps,
+                "exercise_total_volume": total_volume,
             }
+            # Debug: date, name, reps, total_volume for each exercise
+            try:
+                date_str = w_start[:10] if isinstance(w_start, str) and len(w_start) >= 10 else str(w_start)
+            except Exception:
+                date_str = "?"
+            print(f"[volume] date={date_str} | name={exercise_title!r} | reps={total_reps} | total_volume={total_volume:,.0f} kg")
             # Keep all exercise-level fields, they will be column-expanded by json_normalize.
             for k, v in ex.items():
                 row[f"exercise.{k}"] = v
@@ -866,7 +960,13 @@ def main() -> None:
             delta_leg_raises = None if period == "All" else _pct_vs_prior(leg_raises_prior, leg_raises_now, period_label)
             delta_bicep_curls = None if period == "All" else _pct_vs_prior(bicep_curls_prior, bicep_curls_now, period_label)
 
-            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            # Total volume (sum of weight_kg × reps over all sets in period)
+            volume_now = current_df["exercise_total_volume"].sum()
+            volume_prior = prior_df["exercise_total_volume"].sum()
+            delta_volume = None if period == "All" else _pct_vs_prior(volume_prior, volume_now, period_label)
+            volume_display = f"{volume_now:,.0f} kg"
+
+            m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
             with m1:
                 st.metric("Workouts", n_workouts_now, delta_workouts)
             with m2:
@@ -879,6 +979,8 @@ def main() -> None:
                 st.metric("Leg raises", leg_raises_now, delta_leg_raises)
             with m6:
                 st.metric("Bicep curls", bicep_curls_now, delta_bicep_curls)
+            with m7:
+                st.metric("Total volume", volume_display, delta_volume)
 
             st.markdown("")
 
