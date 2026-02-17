@@ -1,7 +1,8 @@
+import calendar
 import os
 import random
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import altair as alt
@@ -337,6 +338,41 @@ def _prior_year_bounds(now: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
     return prior_start.normalize(), prior_end_excl.normalize()
 
 
+def _last_week_same_weekday_bounds(now: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    """Return (start, end_inclusive) for last week Mon–same weekday (aligned with this week)."""
+    this_monday = now.normalize() - pd.Timedelta(days=now.weekday())
+    last_week_monday = this_monday - pd.Timedelta(days=7)
+    last_week_same_weekday = last_week_monday + pd.Timedelta(days=now.weekday())
+    end_of_day = last_week_same_weekday.normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+    return last_week_monday.normalize(), end_of_day
+
+
+def _last_month_same_day_bounds(now: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    """Return (start, end_inclusive) for last month 1st–same day of month (aligned with this month)."""
+    year, month = now.year, now.month
+    if month == 1:
+        last_year, last_month = year - 1, 12
+    else:
+        last_year, last_month = year, month - 1
+    start = pd.Timestamp(year=last_year, month=last_month, day=1, tz=now.tz).normalize()
+    _, last_day = calendar.monthrange(last_year, last_month)
+    day = min(now.day, last_day)
+    end_date = pd.Timestamp(year=last_year, month=last_month, day=day, tz=now.tz).normalize()
+    end_of_day = end_date + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+    return start, end_of_day
+
+
+def _last_year_same_date_bounds(now: pd.Timestamp) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    """Return (start, end_inclusive) for last year 1 Jan–same month/day (aligned with this year)."""
+    last_year = now.year - 1
+    start = pd.Timestamp(year=last_year, month=1, day=1, tz=now.tz).normalize()
+    _, last_day = calendar.monthrange(last_year, now.month)
+    day = min(now.day, last_day)
+    end_date = pd.Timestamp(year=last_year, month=now.month, day=day, tz=now.tz).normalize()
+    end_of_day = end_date + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+    return start, end_of_day
+
+
 def extract_items(payload: Any) -> List[Dict[str, Any]]:
     """
     The Hevy API uses a paginated response for workouts. The exact key
@@ -548,15 +584,21 @@ WORKOUTS_PER_PAGE = 50
 MAX_WORKOUT_PAGES = 500  # safety cap (~25k workouts)
 
 
-@st.cache_data(show_spinner=False, ttl=300)
-def fetch_user_and_workouts(api_key: str) -> Dict[str, Any]:
+def _fetch_user_and_workouts_impl(
+    api_key: str,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
+) -> Dict[str, Any]:
     """
-    Fetch user info and all workouts. Requests at least page_count pages (when
-    the API provides it) so we don't miss data if an intermediate page returns
-    empty/short. Also stops when a page has fewer than WORKOUTS_PER_PAGE items.
+    Fetch user info and all workouts. Optional progress_callback(progress_0_to_1, message).
     """
+    def report(p: float, msg: str) -> None:
+        if progress_callback is not None:
+            progress_callback(p, msg)
+
+    report(0.0, "Fetching user info…")
     user = get_user_info(api_key)
 
+    report(0.05, "Fetching workout list…")
     first = get_workouts(api_key=api_key, page=1, limit=WORKOUTS_PER_PAGE)
     all_workouts = first.get("workouts", []) or extract_items(first)
     page_count = first.get("page_count")
@@ -566,17 +608,19 @@ def fetch_user_and_workouts(api_key: str) -> Dict[str, Any]:
         except (TypeError, ValueError):
             page_count = None
 
+    total_pages = page_count if page_count is not None else 1
     for page in range(2, MAX_WORKOUT_PAGES + 1):
         resp = get_workouts(api_key=api_key, page=page, limit=WORKOUTS_PER_PAGE)
         more = resp.get("workouts", []) or extract_items(resp)
         all_workouts.extend(more)
-        # Stop when we get a short page, but only if we've requested at least page_count pages
-        # (so we don't stop early when the API sometimes returns empty for a valid page)
+        p = min(0.40, 0.05 + 0.35 * (page / max(1, total_pages)))
+        report(p, f"Fetching workout list… (page {page})")
         got_short_page = len(more) < WORKOUTS_PER_PAGE
         if got_short_page and (page_count is None or page >= page_count):
             break
 
-    # Enrich workouts with full details (list endpoint may omit set weight_kg/reps)
+    report(0.40, "Loading workout details…")
+
     def _workout_has_set_data(w: Dict[str, Any]) -> bool:
         for ex in w.get("exercises") or []:
             for s in ex.get("sets") or []:
@@ -589,7 +633,11 @@ def fetch_user_and_workouts(api_key: str) -> Dict[str, Any]:
         return False
 
     enriched: List[Dict[str, Any]] = []
-    for w in all_workouts:
+    n_total = len(all_workouts)
+    for i, w in enumerate(all_workouts):
+        if (i + 1) % 5 == 0 or i == n_total - 1:
+            p = 0.40 + 0.60 * ((i + 1) / max(1, n_total))
+            report(p, f"Loading workout details… ({i + 1} / {n_total})")
         wid = w.get("id")
         if wid and not _workout_has_set_data(w):
             try:
@@ -604,6 +652,7 @@ def fetch_user_and_workouts(api_key: str) -> Dict[str, Any]:
             enriched.append(w)
     all_workouts = enriched
 
+    report(1.0, "Done.")
     workouts_raw = {**first, "workouts": all_workouts}
     df = pd.json_normalize(all_workouts) if all_workouts else pd.DataFrame()
 
@@ -613,6 +662,16 @@ def fetch_user_and_workouts(api_key: str) -> Dict[str, Any]:
         "workouts": all_workouts,
         "workouts_df": df,
     }
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def fetch_user_and_workouts(api_key: str) -> Dict[str, Any]:
+    """
+    Fetch user info and all workouts. Requests at least page_count pages (when
+    the API provides it) so we don't miss data if an intermediate page returns
+    empty/short. Also stops when a page has fewer than WORKOUTS_PER_PAGE items.
+    """
+    return _fetch_user_and_workouts_impl(api_key, None)
 
 
 def main() -> None:
@@ -635,10 +694,16 @@ def main() -> None:
         with loading.container():
             st.markdown("## 💪 STRONGER DAY BY DAY")
             st.markdown("### Loading my workouts…")
-            st.caption("Fetching data from the API. One moment.")
+            progress_bar = st.progress(0)
+            status_text = st.caption("Starting…")
+
+            def on_progress(p: float, msg: str) -> None:
+                progress_bar.progress(p)
+                status_text.caption(msg)
+
         try:
             st.cache_data.clear()
-            data = fetch_user_and_workouts(api_key)
+            data = _fetch_user_and_workouts_impl(api_key, on_progress)
             st.session_state["hevy_data"] = data
             loading.empty()
             st.rerun()
@@ -921,18 +986,15 @@ def main() -> None:
             now = pd.Timestamp.now(tz="UTC")
             if period == "This week":
                 current_start, current_end = _this_week_bounds(now)
-                prior_start, prior_end_excl = _last_week_bounds(now)
-                prior_end = prior_end_excl - pd.Timedelta(microseconds=1)
+                prior_start, prior_end = _last_week_same_weekday_bounds(now)
                 period_label = "vs last week"
             elif period == "This month":
                 current_start, current_end = _this_month_bounds(now)
-                prior_start, prior_end_excl = _last_month_bounds(now)
-                prior_end = prior_end_excl - pd.Timedelta(microseconds=1)
+                prior_start, prior_end = _last_month_same_day_bounds(now)
                 period_label = "vs last month"
             elif period == "This year":
                 current_start, current_end = _this_year_bounds(now)
-                prior_start, prior_end_excl = _last_year_bounds(now)
-                prior_end = prior_end_excl - pd.Timedelta(microseconds=1)
+                prior_start, prior_end = _last_year_same_date_bounds(now)
                 period_label = "vs last year"
             elif period == "Last week":
                 current_start, current_end_excl = _last_week_bounds(now)
