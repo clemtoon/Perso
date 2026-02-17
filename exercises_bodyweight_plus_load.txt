@@ -1,0 +1,10 @@
+# Exercises where total volume = (bodyweight + weight_kg) × reps
+# One exercise name or pattern per line. Match is case-insensitive; accents (é, è) are normalized.
+# Lines starting with # and empty lines are ignored.
+# Examples: "Dips Torse (Lesté)", "Tractions (Lesté)" → volume includes your bodyweight + vest/load.
+# Exercises NOT listed here (e.g. "Leg Raise (Lesté)") use only weight_kg × reps.
+
+dips torse (lesté)
+tractions (lesté)
+dips
+tractions

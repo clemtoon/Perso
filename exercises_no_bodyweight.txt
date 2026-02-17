@@ -1,0 +1,8 @@
+# Exercises that use only weight_kg × reps (bodyweight is NOT added).
+# One exercise name or pattern per line. Match is case-insensitive; accents (é, è) are normalized.
+# Lines starting with # and empty lines are ignored.
+# Example: "Pompes" (push-ups) → volume = weight_kg × reps only (0 if no weight logged).
+
+pompes
+Relevé de Jambe Barres Parallèles
+Squat (Poids du Corps)

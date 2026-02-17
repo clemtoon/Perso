@@ -509,6 +509,40 @@ def _format_duration_hours_min(total_seconds: float) -> str:
     return f"{hours} Hour{'s' if hours != 1 else ''} {mins} min"
 
 
+# Path to the file listing exercises that use (bodyweight + weight_kg) × reps (one pattern per line).
+EXERCISES_BODYWEIGHT_PLUS_LOAD_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exercises_bodyweight_plus_load.txt")
+
+
+def _load_exercises_bodyweight_plus_load() -> List[str]:
+    """Load exercise patterns from the config file. One pattern per line; # and empty lines ignored."""
+    default = ["dips torse (lesté)", "tractions (lesté)"]
+    path = EXERCISES_BODYWEIGHT_PLUS_LOAD_FILE
+    if not os.path.isfile(path):
+        return default
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+        return lines if lines else default
+    except Exception:
+        return default
+
+
+EXERCISES_NO_BODYWEIGHT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exercises_no_bodyweight.txt")
+
+
+def _load_exercises_no_bodyweight() -> List[str]:
+    """Load exercise patterns that must not use bodyweight (only set weight × reps)."""
+    path = EXERCISES_NO_BODYWEIGHT_FILE
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+        return lines
+    except Exception:
+        return []
+
+
 # Fetch all workouts. Trust API page_count when present; also stop when we get a short page.
 WORKOUTS_PER_PAGE = 50
 MAX_WORKOUT_PAGES = 500  # safety cap (~25k workouts)
@@ -678,8 +712,14 @@ def main() -> None:
     if bodyweight_kg <= 0:
         bodyweight_kg = 62.0  # default for bodyweight exercises when API has no weight
 
+    exercises_bodyweight_plus_load = _load_exercises_bodyweight_plus_load()
+    exercises_no_bodyweight = _load_exercises_no_bodyweight()
     exercise_rows: List[Dict[str, Any]] = []
-    for w in raw_workouts:
+    workouts_by_date = sorted(
+        raw_workouts,
+        key=lambda w: w.get("start_time") or w.get("startTime") or "",
+    )
+    for w in workouts_by_date:
         w_id = w.get("id")
         w_title = w.get("title")
         w_start = w.get("start_time") or w.get("startTime")
@@ -692,8 +732,17 @@ def main() -> None:
             if not isinstance(ex, dict):
                 continue
             exercise_title = ex.get("title") or "Unknown"
-            is_leste = "leste" in (exercise_title or "").strip().lower()
-            # Compute total reps and total volume (weight_kg × reps) for this exercise
+            title_lower = (exercise_title or "").strip().lower()
+            title_normalized = title_lower.replace("é", "e").replace("è", "e")
+            # Only exercises in the list use (bodyweight + weight_kg) × reps
+            patterns_normalized = [p.lower().replace("é", "e").replace("è", "e") for p in exercises_bodyweight_plus_load]
+            use_bodyweight_plus_load = any(pat in title_normalized for pat in patterns_normalized)
+            # Exercises in no-bodyweight file (e.g. Pompes): only set weight × reps
+            no_bw_patterns = [p.lower().replace("é", "e").replace("è", "e") for p in exercises_no_bodyweight]
+            use_no_bodyweight = any(pat in title_normalized for pat in no_bw_patterns)
+            # Lesté but not in bodyweight+load list: only set weight (no bodyweight)
+            is_leste_other = "leste" in title_normalized and not use_bodyweight_plus_load and not use_no_bodyweight
+            # Compute total reps and total volume
             total_reps = 0
             total_volume = 0.0
             weight_kg_per_set: List[Any] = []
@@ -704,14 +753,18 @@ def main() -> None:
                 total_reps += reps_val
                 raw_kg = _first_present(s, ("weight_kg", "weightKg", "weight", "load"))
                 try:
-                    lest_kg = float(raw_kg) if raw_kg is not None else 0.0
+                    extra_kg = float(raw_kg) if raw_kg is not None else 0.0
                 except (TypeError, ValueError):
-                    lest_kg = 0.0
-                if is_leste:
-                    # Leste: (bodyweight + lest) × reps
-                    load_kg = bodyweight_kg + lest_kg
+                    extra_kg = 0.0
+                if use_bodyweight_plus_load:
+                    # (bodyweight + weight_kg) × reps
+                    load_kg = bodyweight_kg + extra_kg
                     set_vol = load_kg * reps_val
-                    weight_kg_per_set.append(f"bw+lest({bodyweight_kg}+{lest_kg})")
+                    weight_kg_per_set.append(f"bw+load({bodyweight_kg}+{extra_kg})")
+                elif is_leste_other or use_no_bodyweight:
+                    # Only set weight (no bodyweight): from no-bodyweight list or lesté not in bodyweight+load list
+                    set_vol = extra_kg * reps_val
+                    weight_kg_per_set.append(extra_kg if raw_kg is not None else "0")
                 else:
                     set_vol = _set_volume_kg(s, bodyweight_kg)
                     weight_kg_per_set.append(raw_kg if raw_kg is not None else f"bw({bodyweight_kg})")
@@ -725,12 +778,12 @@ def main() -> None:
                 "exercise_total_reps": total_reps,
                 "exercise_total_volume": total_volume,
             }
-            # Debug: date, name, reps, total_volume for each exercise
-            try:
-                date_str = w_start[:10] if isinstance(w_start, str) and len(w_start) >= 10 else str(w_start)
-            except Exception:
-                date_str = "?"
-            print(f"[volume] date={date_str} | name={exercise_title!r} | reps={total_reps} | total_volume={total_volume:,.0f} kg")
+            # Debug: date, name, reps, weight_kg, total_volume for each exercise (uncomment to re-enable logs)
+            # try:
+            #     date_str = w_start[:10] if isinstance(w_start, str) and len(w_start) >= 10 else str(w_start)
+            # except Exception:
+            #     date_str = "?"
+            # print(f"[volume] date={date_str} | name={exercise_title!r} | reps={total_reps} | weight_kg={weight_kg_per_set} | total_volume={total_volume:,.0f} kg")
             # Keep all exercise-level fields, they will be column-expanded by json_normalize.
             for k, v in ex.items():
                 row[f"exercise.{k}"] = v
