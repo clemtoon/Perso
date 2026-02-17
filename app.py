@@ -1,7 +1,9 @@
 import calendar
+from datetime import date, timedelta
 import os
 import random
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
@@ -530,6 +532,107 @@ def _workout_duration_seconds(workout: Dict[str, Any]) -> float:
     return 0.0
 
 
+def _workout_dates_sorted(raw_workouts: List[Dict[str, Any]]) -> List[date]:
+    """Return sorted list of unique dates that have at least one workout."""
+    seen: set = set()
+    for w in raw_workouts:
+        ts = _workout_datetime(w)
+        if ts is not None:
+            d = ts.normalize().date()
+            seen.add(d)
+    return sorted(seen)
+
+
+def _longest_streak(dates: List[date]) -> int:
+    """Longest run of consecutive days with a workout."""
+    if not dates:
+        return 0
+    best = 1
+    current = 1
+    for i in range(1, len(dates)):
+        if (dates[i] - dates[i - 1]).days == 1:
+            current += 1
+        else:
+            best = max(best, current)
+            current = 1
+    return max(best, current)
+
+
+def _current_streak(dates: List[date], today: date) -> int:
+    """From today (or yesterday if today not in list), count backwards while consecutive."""
+    if not dates:
+        return 0
+    dates_set = set(dates)
+    start = today if today in dates_set else (today - timedelta(days=1) if (today - timedelta(days=1)) in dates_set else None)
+    if start is None:
+        return 0
+    count = 0
+    d = start
+    while d in dates_set:
+        count += 1
+        d -= timedelta(days=1)
+    return count
+
+
+def _cumulative_workouts_series(dates: List[date]) -> pd.DataFrame:
+    """DataFrame: date (every day from first workout to today), cumulative (running count)."""
+    if not dates:
+        return pd.DataFrame(columns=["date", "cumulative"])
+    first = dates[0]
+    today_d = date.today()
+    end = today_d if today_d > dates[-1] else dates[-1]
+    dates_set = set(dates)
+    rows = []
+    cum = 0
+    d = first
+    while d <= end:
+        if d in dates_set:
+            cum += 1
+        rows.append({"date": d.isoformat(), "cumulative": cum})
+        d += timedelta(days=1)
+    return pd.DataFrame(rows)
+
+
+def _workouts_per_week_series(dates: List[date]) -> pd.DataFrame:
+    """DataFrame: week_start (Monday), workouts (count of workout days that week)."""
+    if not dates:
+        return pd.DataFrame(columns=["week_start", "workouts"])
+    week_counts: Dict[date, int] = {}
+    for d in dates:
+        week_start = d - timedelta(days=d.weekday())
+        week_counts[week_start] = week_counts.get(week_start, 0) + 1
+    first_week = dates[0] - timedelta(days=dates[0].weekday())
+    last_week = dates[-1] - timedelta(days=dates[-1].weekday())
+    today_d = date.today()
+    end_week = today_d - timedelta(days=today_d.weekday())
+    last_week = max(last_week, end_week)
+    rows = []
+    w = first_week
+    while w <= last_week:
+        rows.append({"week_start": w.isoformat(), "workouts": week_counts.get(w, 0)})
+        w += timedelta(days=7)
+    return pd.DataFrame(rows)
+
+
+def _dedication_heatmap_grid(dates: List[date]) -> pd.DataFrame:
+    """GitHub-style heatmap: one row per day from first workout to today; week, day_of_week, date, count (0 or 1)."""
+    if not dates:
+        return pd.DataFrame(columns=["week", "day_of_week", "date", "count"])
+    first = dates[0]
+    today_d = date.today()
+    end = today_d if today_d > dates[-1] else dates[-1]
+    dates_set = set(dates)
+    rows = []
+    d = first
+    while d <= end:
+        week_idx = (d - first).days // 7
+        dow = d.weekday()
+        count = 1 if d in dates_set else 0
+        rows.append({"week": week_idx, "day_of_week": dow, "date": d.isoformat(), "count": count})
+        d += timedelta(days=1)
+    return pd.DataFrame(rows)
+
+
 def _format_duration_hours_min(total_seconds: float) -> str:
     """Format seconds as 'x Hours y min' or 'x min' if under an hour."""
     total_seconds = max(0, int(round(total_seconds)))
@@ -582,6 +685,8 @@ def _load_exercises_no_bodyweight() -> List[str]:
 # Fetch all workouts. Trust API page_count when present; also stop when we get a short page.
 WORKOUTS_PER_PAGE = 50
 MAX_WORKOUT_PAGES = 500  # safety cap (~25k workouts)
+MAX_ENRICH_WORKOUTS = 100  # cap how many get_workout_by_id calls; None = no cap
+ENRICH_MAX_WORKERS = 1  # 1 = sequential (safest); 2–4 may be faster if API allows
 
 
 def _fetch_user_and_workouts_impl(
@@ -632,22 +737,54 @@ def _fetch_user_and_workouts_impl(
                     return True
         return False
 
-    enriched: List[Dict[str, Any]] = []
-    n_total = len(all_workouts)
+    def _fetch_one_workout(key: str, wid: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Fetch full workout by id; returns (workout_id, full_dict or None on failure)."""
+        try:
+            full = get_workout_by_id(key, wid)
+            return (wid, full if isinstance(full, dict) else None)
+        except Exception:
+            return (wid, None)
+
+    to_enrich: List[Tuple[int, Dict[str, Any]]] = []
     for i, w in enumerate(all_workouts):
-        if (i + 1) % 5 == 0 or i == n_total - 1:
-            p = 0.40 + 0.60 * ((i + 1) / max(1, n_total))
-            report(p, f"Loading workout details… ({i + 1} / {n_total})")
         wid = w.get("id")
         if wid and not _workout_has_set_data(w):
-            try:
-                full = get_workout_by_id(api_key, wid)
-                if isinstance(full, dict):
-                    enriched.append(full)
-                else:
-                    enriched.append(w)
-            except Exception:
-                enriched.append(w)
+            to_enrich.append((i, w))
+            if MAX_ENRICH_WORKOUTS is not None and len(to_enrich) >= MAX_ENRICH_WORKOUTS:
+                break
+
+    results: Dict[str, Optional[Dict[str, Any]]] = {}
+    n_to_enrich = len(to_enrich)
+    if n_to_enrich > 0:
+        if ENRICH_MAX_WORKERS <= 1:
+            # Sequential: no executor overhead, avoids API rate limits
+            n_total = len(all_workouts)
+            for i, (_idx, w) in enumerate(to_enrich):
+                if (i + 1) % 5 == 0 or i == n_to_enrich - 1:
+                    p = 0.40 + 0.60 * ((i + 1) / n_to_enrich)
+                    report(p, f"Loading workout details… ({i + 1} / {n_to_enrich})")
+                wid, full = _fetch_one_workout(api_key, w["id"])
+                results[wid] = full
+        else:
+            completed = 0
+            with ThreadPoolExecutor(max_workers=ENRICH_MAX_WORKERS) as executor:
+                future_to_wid = {
+                    executor.submit(_fetch_one_workout, api_key, w["id"]): w["id"]
+                    for _idx, w in to_enrich
+                }
+                for future in as_completed(future_to_wid):
+                    wid, full = future.result()
+                    results[wid] = full
+                    completed += 1
+                    if completed % 10 == 0 or completed == n_to_enrich:
+                        p = 0.40 + 0.60 * (completed / n_to_enrich)
+                        report(p, f"Loading workout details… ({completed} / {n_to_enrich})")
+
+    enriched = []
+    for w in all_workouts:
+        wid = w.get("id")
+        if wid in results and results[wid] is not None:
+            enriched.append(results[wid])
         else:
             enriched.append(w)
     all_workouts = enriched
@@ -720,8 +857,8 @@ def main() -> None:
             st.session_state["quote_idx"] = random.randint(0, len(ATHLETE_QUOTES) - 1)
         name, quote = ATHLETE_QUOTES[st.session_state["quote_idx"]]
         st.markdown(f'*"{quote}"* — **{name}**')
-        st.caption("Workout volume and trends from Hevy")
-        st.markdown("Your workout data has not been loaded yet. Click below to fetch your workouts from Hevy.")
+        # st.caption("Workout volume and trends from Hevy")
+        # st.markdown("Your workout data has not been loaded yet. Click below to fetch your workouts from Hevy.")
         if st.button("Load my workouts", type="primary"):
             st.session_state["fetch_requested"] = True
             st.rerun()
@@ -899,6 +1036,96 @@ def main() -> None:
                 key="exercise_filter",
             )
         st.markdown("")
+
+        # Dedication (all-time; uses raw_workouts only)
+        st.subheader("Dedication")
+        dates_dedication = _workout_dates_sorted(raw_workouts)
+        today_d = date.today()
+        if not dates_dedication:
+            st.caption("No workouts yet.")
+        else:
+            longest = _longest_streak(dates_dedication)
+            current = _current_streak(dates_dedication, today_d)
+            first_date = dates_dedication[0]
+            n_days = len(dates_dedication)
+            weeks_span = max(1, (today_d - first_date).days // 7)
+            avg_per_week = n_days / weeks_span
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.metric("Current streak", f"{current} days", None)
+            with c2:
+                st.metric("Longest streak", f"{longest} days", None)
+            with c3:
+                st.metric("Total workout days", n_days, None)
+            with c4:
+                st.metric("First workout", first_date.strftime("%d %b %Y"), None)
+            st.caption(f"Avg {avg_per_week:.1f} workout days per week since start.")
+
+            heatmap_df = _dedication_heatmap_grid(dates_dedication)
+            if not heatmap_df.empty:
+                heatmap_df["label"] = heatmap_df["count"].apply(
+                    lambda c: "Workout" if c else "No workout"
+                )
+                heatmap_chart = (
+                    alt.Chart(heatmap_df)
+                    .mark_rect()
+                    .encode(
+                        x=alt.X(
+                            "week:O",
+                            title=None,
+                            axis=alt.Axis(labels=False),
+                            scale=alt.Scale(paddingInner=0, paddingOuter=0),
+                        ),
+                        y=alt.Y(
+                            "day_of_week:O",
+                            title=None,
+                            sort=alt.EncodingSortField("day_of_week", order="descending"),
+                            scale=alt.Scale(paddingInner=0, paddingOuter=0),
+                        ),
+                        color=alt.Color(
+                            "count:Q",
+                            scale=alt.Scale(domain=[0, 1], range=["#1e293b", "#22c55e"]),
+                            legend=None,
+                        ),
+                        tooltip=[
+                            alt.Tooltip("date:N", title="Date"),
+                            alt.Tooltip("label:N", title=""),
+                        ],
+                    )
+                    .properties(background="transparent", height=140)
+                    .configure_axis(labelColor="#e5e7eb", domainColor="#4b5563")
+                    .configure_view(strokeWidth=0)
+                )
+                st.altair_chart(heatmap_chart, use_container_width=True)
+                st.caption("One square = one day; darker = workout day (GitHub-style).")
+
+            weekly_df = _workouts_per_week_series(dates_dedication)
+            if not weekly_df.empty:
+                weekly_chart = (
+                    alt.Chart(weekly_df)
+                    .mark_line(color="#22c55e", strokeWidth=2)
+                    .encode(
+                        x=alt.X("week_start:T", title=None),
+                        y=alt.Y("workouts:Q", title="Workouts per week"),
+                        tooltip=[
+                            alt.Tooltip("week_start:T", title="Week"),
+                            alt.Tooltip("workouts:Q", title="Workouts"),
+                        ],
+                    )
+                    .properties(background="transparent", height=220)
+                    .configure_axis(
+                        labelFontSize=11,
+                        titleFontSize=12,
+                        labelColor="#e5e7eb",
+                        titleColor="#e5e7eb",
+                        domainColor="#4b5563",
+                        gridColor="#020617",
+                    )
+                    .configure_view(strokeWidth=0)
+                )
+                st.altair_chart(weekly_chart, use_container_width=True)
+                st.caption("Number of workout days per week (Monday–Sunday).")
+            st.markdown("")
 
         # Apply period filter (this / last week / month / year or all)
         now_utc = pd.Timestamp.now(tz="UTC")
