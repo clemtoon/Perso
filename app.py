@@ -1066,6 +1066,25 @@ def main() -> None:
                 heatmap_df["label"] = heatmap_df["count"].apply(
                     lambda c: "Workout" if c else "No workout"
                 )
+                day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                heatmap_df["day_name"] = heatmap_df["day_of_week"].map(
+                    lambda i: day_names[i] if 0 <= i < 7 else ""
+                )
+                first_date = dates_dedication[0]
+                end_date = date.today() if date.today() > dates_dedication[-1] else dates_dedication[-1]
+                year_labels_rows = []
+                for y in range(first_date.year, end_date.year + 1):
+                    jan1 = date(y, 1, 1)
+                    dec31 = date(y, 12, 31)
+                    first_in_range = max(jan1, first_date)
+                    last_in_range = min(dec31, end_date)
+                    if first_in_range > last_in_range:
+                        continue
+                    first_week = (first_in_range - first_date).days // 7
+                    last_week = (last_in_range - first_date).days // 7
+                    week_center = (first_week + last_week) / 2.0
+                    year_labels_rows.append({"year_label": str(y), "week_center": week_center})
+                year_labels_df = pd.DataFrame(year_labels_rows)
                 heatmap_chart = (
                     alt.Chart(heatmap_df)
                     .mark_rect()
@@ -1077,10 +1096,16 @@ def main() -> None:
                             scale=alt.Scale(paddingInner=0, paddingOuter=0),
                         ),
                         y=alt.Y(
-                            "day_of_week:O",
+                            "day_name:N",
                             title=None,
-                            sort=alt.EncodingSortField("day_of_week", order="descending"),
+                            sort=[" ", "Sun", "Sat", "Fri", "Thu", "Wed", "Tue", "Mon"],
                             scale=alt.Scale(paddingInner=0, paddingOuter=0),
+                            axis=alt.Axis(
+                                values=["Sun", "Thu", "Mon"],
+                                domain=False,
+                                ticks=False,
+                                labelColor="#e5e7eb",
+                            ),
                         ),
                         color=alt.Color(
                             "count:Q",
@@ -1092,10 +1117,43 @@ def main() -> None:
                             alt.Tooltip("label:N", title=""),
                         ],
                     )
-                    .properties(background="transparent", height=140)
-                    .configure_axis(labelColor="#e5e7eb", domainColor="#4b5563")
-                    .configure_view(strokeWidth=0)
+                    .properties(height=140)
                 )
+                if not year_labels_df.empty:
+                    year_labels_df = year_labels_df.copy()
+                    year_labels_df["y_row"] = " "
+                    year_text_layer = (
+                        alt.Chart(year_labels_df)
+                        .mark_text(align="center", baseline="middle", fontSize=11, color="#94a3b8")
+                        .encode(
+                            x=alt.X(
+                                "week_center:Q",
+                                title=None,
+                                scale=alt.Scale(zero=True),
+                                axis=alt.Axis(labels=False, domain=False, ticks=False),
+                            ),
+                            y=alt.Y(
+                                "y_row:N",
+                                title=None,
+                                sort=[" ", "Sun", "Sat", "Fri", "Thu", "Wed", "Tue", "Mon"],
+                                axis=alt.Axis(labels=False, domain=False, ticks=False),
+                            ),
+                            text=alt.Text("year_label:N"),
+                        )
+                    )
+                    heatmap_chart = (
+                        (heatmap_chart + year_text_layer)
+                        .resolve_scale(x="shared", y="shared")
+                        .properties(background="transparent", height=165)
+                        .configure_axis(labelColor="#e5e7eb", domainColor="#4b5563")
+                        .configure_view(strokeWidth=0)
+                    )
+                else:
+                    heatmap_chart = heatmap_chart.properties(
+                        background="transparent"
+                    ).configure_axis(
+                        labelColor="#e5e7eb", domainColor="#4b5563"
+                    ).configure_view(strokeWidth=0)
                 st.altair_chart(heatmap_chart, use_container_width=True)
                 st.caption("One square = one day; darker = workout day (GitHub-style).")
 
