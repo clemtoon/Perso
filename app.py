@@ -820,26 +820,29 @@ def main() -> None:
         )
         st.stop()
 
-    # Data is only fetched when user clicks "Load" or "Refresh"; otherwise use session state
+    # Data: use session state; fetch only when user clicks Load or Refresh (so they see progress)
     if "hevy_data" not in st.session_state:
         st.session_state["hevy_data"] = None
 
     # Refetch when user requested (Load my workouts or Refresh data)
     if st.session_state.get("fetch_requested"):
         st.session_state["fetch_requested"] = False
+        is_first_load = st.session_state["hevy_data"] is None
         loading = st.empty()
         with loading.container():
             st.markdown("## 💪 STRONGER DAY BY DAY")
             st.markdown("### Loading my workouts…")
             progress_bar = st.progress(0)
             status_text = st.caption("Starting…")
+            st.caption("*First load can take 1–2 minutes depending on your history.*")
 
             def on_progress(p: float, msg: str) -> None:
                 progress_bar.progress(p)
                 status_text.caption(msg)
 
         try:
-            st.cache_data.clear()
+            if not is_first_load:
+                st.cache_data.clear()
             data = _fetch_user_and_workouts_impl(api_key, on_progress)
             st.session_state["hevy_data"] = data
             loading.empty()
@@ -851,13 +854,12 @@ def main() -> None:
 
     data = st.session_state["hevy_data"]
     if data is None:
-        # No data loaded yet: show prompt to load
+        # No data (e.g. after failed load): show prompt to load
         st.title("STRONGER DAY BY DAY")
         if "quote_idx" not in st.session_state:
             st.session_state["quote_idx"] = random.randint(0, len(ATHLETE_QUOTES) - 1)
         name, quote = ATHLETE_QUOTES[st.session_state["quote_idx"]]
         st.markdown(f'*"{quote}"* — **{name}**')
-        # st.caption("Workout volume and trends from Hevy")
         # st.markdown("Your workout data has not been loaded yet. Click below to fetch your workouts from Hevy.")
         if st.button("Load my workouts", type="primary"):
             st.session_state["fetch_requested"] = True
