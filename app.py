@@ -887,7 +887,7 @@ def main() -> None:
         st.session_state["quote_idx"] = random.randint(0, len(ATHLETE_QUOTES) - 1)
     name, quote = ATHLETE_QUOTES[st.session_state["quote_idx"]]
     st.markdown(f'*"{quote}"* — **{name}**')
-    st.caption("Workout volume and trends from Hevy")
+    # st.caption("Workout volume and trends from Hevy")
 
     # Bodyweight (kg) for volume when set has no weight (bodyweight exercises)
     bodyweight_kg = 0.0
@@ -1033,7 +1033,7 @@ def main() -> None:
                 st.metric("Total workout days", n_days, None)
             with c4:
                 st.metric("First workout", first_date.strftime("%d %b %Y"), None)
-            st.caption(f"Avg {avg_per_week:.1f} workout days per week since start.")
+            # st.caption(f"Avg {avg_per_week:.1f} workout days per week since start.")
 
             heatmap_df = _dedication_heatmap_grid(dates_dedication)
             if not heatmap_df.empty:
@@ -1154,7 +1154,7 @@ def main() -> None:
                         labelColor="#e5e7eb", domainColor="#4b5563"
                     ).configure_view(strokeWidth=0)
                 st.altair_chart(heatmap_chart, use_container_width=True)
-                st.caption("One square = one day; darker = workout day (GitHub-style).")
+                # st.caption("One square = one day; darker = workout day (GitHub-style).")
             st.markdown("")
 
         # Filters below Dedication
