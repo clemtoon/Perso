@@ -1011,32 +1011,6 @@ def main() -> None:
             [str(n) for n in exercises_flat["exercise_title"].dropna().unique().tolist()]
         )
 
-        # Filters above the cards (main area)
-        filter_col1, filter_col2 = st.columns(2)
-        with filter_col1:
-            period = st.selectbox(
-                "Time period",
-                options=[
-                    "All",
-                    "This week",
-                    "This month",
-                    "This year",
-                    "Last week",
-                    "Last month",
-                    "Last year",
-                ],
-                index=2,
-                key="time_period",
-            )
-        with filter_col2:
-            selected = st.selectbox(
-                "Exercise",
-                options=["All"] + exercise_names,
-                index=0,
-                key="exercise_filter",
-            )
-        st.markdown("")
-
         # Dedication (all-time; uses raw_workouts only)
         st.subheader("Dedication")
         dates_dedication = _workout_dates_sorted(raw_workouts)
@@ -1085,6 +1059,16 @@ def main() -> None:
                     week_center = (first_week + last_week) / 2.0
                     year_labels_rows.append({"year_label": str(y), "week_center": week_center})
                 year_labels_df = pd.DataFrame(year_labels_rows)
+                max_week = int(heatmap_df["week"].max())
+                year_boundaries = []
+                for y in range(first_date.year + 1, end_date.year + 1):
+                    jan1 = date(y, 1, 1)
+                    if jan1 < first_date:
+                        continue
+                    week_idx = (jan1 - first_date).days // 7
+                    if 0 < week_idx <= max_week:
+                        year_boundaries.append({"week_idx": week_idx, "x_boundary": week_idx - 0.5})
+                year_boundaries_df = pd.DataFrame(year_boundaries)
                 heatmap_chart = (
                     alt.Chart(heatmap_df)
                     .mark_rect()
@@ -1141,8 +1125,23 @@ def main() -> None:
                             text=alt.Text("year_label:N"),
                         )
                     )
+                    layers = [heatmap_chart, year_text_layer]
+                    if not year_boundaries_df.empty:
+                        rule_layer = (
+                            alt.Chart(year_boundaries_df)
+                            .mark_rule(stroke="white", strokeWidth=1)
+                            .encode(
+                                x=alt.X(
+                                    "x_boundary:Q",
+                                    title=None,
+                                    scale=alt.Scale(zero=True, paddingInner=0, paddingOuter=0),
+                                    axis=alt.Axis(labels=False, domain=False, ticks=False),
+                                ),
+                            )
+                        )
+                        layers.append(rule_layer)
                     heatmap_chart = (
-                        (heatmap_chart + year_text_layer)
+                        alt.layer(*layers)
                         .resolve_scale(x="shared", y="shared")
                         .properties(background="transparent", height=165)
                         .configure_axis(labelColor="#e5e7eb", domainColor="#4b5563")
@@ -1156,34 +1155,33 @@ def main() -> None:
                     ).configure_view(strokeWidth=0)
                 st.altair_chart(heatmap_chart, use_container_width=True)
                 st.caption("One square = one day; darker = workout day (GitHub-style).")
-
-            weekly_df = _workouts_per_week_series(dates_dedication)
-            if not weekly_df.empty:
-                weekly_chart = (
-                    alt.Chart(weekly_df)
-                    .mark_line(color="#22c55e", strokeWidth=2)
-                    .encode(
-                        x=alt.X("week_start:T", title=None),
-                        y=alt.Y("workouts:Q", title="Workouts per week"),
-                        tooltip=[
-                            alt.Tooltip("week_start:T", title="Week"),
-                            alt.Tooltip("workouts:Q", title="Workouts"),
-                        ],
-                    )
-                    .properties(background="transparent", height=220)
-                    .configure_axis(
-                        labelFontSize=11,
-                        titleFontSize=12,
-                        labelColor="#e5e7eb",
-                        titleColor="#e5e7eb",
-                        domainColor="#4b5563",
-                        gridColor="#020617",
-                    )
-                    .configure_view(strokeWidth=0)
-                )
-                st.altair_chart(weekly_chart, use_container_width=True)
-                st.caption("Number of workout days per week (Monday–Sunday).")
             st.markdown("")
+
+        # Filters below Dedication
+        filter_col1, filter_col2 = st.columns(2)
+        with filter_col1:
+            period = st.selectbox(
+                "Time period",
+                options=[
+                    "All",
+                    "This week",
+                    "This month",
+                    "This year",
+                    "Last week",
+                    "Last month",
+                    "Last year",
+                ],
+                index=2,
+                key="time_period",
+            )
+        with filter_col2:
+            selected = st.selectbox(
+                "Exercise",
+                options=["All"] + exercise_names,
+                index=0,
+                key="exercise_filter",
+            )
+        st.markdown("")
 
         # Apply period filter (this / last week / month / year or all)
         now_utc = pd.Timestamp.now(tz="UTC")
