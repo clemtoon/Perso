@@ -31,13 +31,24 @@ def main() -> None:
             if not is_first_load:
                 st.cache_data.clear()
             data = data_fetch._fetch_user_and_workouts_impl(api_key, on_progress)
-            storage.save(api_key, data)
+            save_debug = storage.save(api_key, data)
+            st.session_state["storage_debug"] = save_debug
             st.session_state["hevy_data"] = data
             loading_placeholder.empty()
             st.rerun()
         except HevyApiError as exc:
             loading_placeholder.empty()
+            st.session_state["storage_debug"] = {"fetch_failed": True, "error": str(exc)}
             st.error(f"Error talking to Hevy API: {exc}")
+            with st.expander("Debug (fetch failed before save)", expanded=True):
+                st.json(st.session_state["storage_debug"])
+            st.stop()
+        except Exception as exc:
+            loading_placeholder.empty()
+            st.session_state["storage_debug"] = {"fetch_failed": True, "error": str(exc), "type": type(exc).__name__}
+            st.error(f"Unexpected error: {exc}")
+            with st.expander("Debug (error before save)", expanded=True):
+                st.json(st.session_state["storage_debug"])
             st.stop()
 
     data = st.session_state["hevy_data"]

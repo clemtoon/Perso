@@ -13,7 +13,8 @@ def render_empty_state() -> None:
         st.session_state["quote_idx"] = random.randint(0, len(ATHLETE_QUOTES) - 1)
     name, quote = ATHLETE_QUOTES[st.session_state["quote_idx"]]
     st.markdown(f'*"{quote}"* — **{name}**')
-    if st.button("Fetch workouts", type="primary"):
+    if st.button("Fetch from Supabase", type="primary"):
         st.session_state["fetch_requested"] = True
         st.rerun()
+    st.caption("First fetch can take 30–60 seconds. After it finishes, « Storage debug » appears at the top of the dashboard.")
     st.stop()
