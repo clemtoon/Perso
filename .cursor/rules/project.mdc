@@ -1,0 +1,17 @@
+---
+description: Project structure map for Day by Day app — where to edit for common tasks
+alwaysApply: true
+---
+
+# Day by Day — where to edit
+
+- **Entry**: `app.py` runs the app; `main_flow.main()` is the flow. Page config and CSS injection in `app.py`.
+- **UI text / empty state / loading**: `config.py` (constants, quotes), `views/empty.py`, `views/loading.py`.
+- **Dashboard (metrics, filters, period options, sidebar)**: `views/dashboard.py`.
+- **Charts (heatmap, bar chart)**: `charts.py`; dashboard calls these. Change chart styling or logic in `charts.py`.
+- **Date ranges / period logic**: `dates.py`.
+- **API fetch / cache**: `data_fetch.py`.
+- **Workout/exercise parsing, streaks, dedication grid**: `workout_parsing.py`.
+- **Styles**: `styles.py` (`get_app_css()`).
+
+For small edits (e.g. change a label, add a period, tweak a chart), open the relevant module above instead of the whole codebase.
