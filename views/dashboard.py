@@ -20,35 +20,12 @@ def render_dashboard(data: Dict[str, Any]) -> None:
     workouts_df = data["workouts_df"]
     raw_workouts = data["workouts_raw"].get("workouts", [])
 
-    # Storage debug in main area so it’s visible (sidebar is collapsed by default)
-    if "storage_debug" in st.session_state:
-        d = st.session_state["storage_debug"]
-        with st.container():
-            st.markdown("---")
-            st.markdown("**Storage debug** (last save to Supabase)")
-            if d.get("fetch_failed"):
-                st.error("Fetch failed before save: " + str(d.get("error", "")))
-            else:
-                st.write(
-                    "Supabase used:", d.get("use_supabase"),
-                    "| success:", d.get("success"),
-                    "| has URL:", d.get("has_url"),
-                    "| has KEY:", d.get("has_key"),
-                )
-                if d.get("error"):
-                    st.error("Upsert error: " + str(d["error"]))
-                st.json(d)
-            st.markdown("---")
-
     with st.sidebar:
         if st.button("Refresh Supabase", width="stretch"):
             st.cache_data.clear()
             st.session_state["fetch_requested"] = True
             st.rerun()
         with st.expander("Debug", expanded=False):
-            if "storage_debug" in st.session_state:
-                st.caption("Last storage save:")
-                st.json(st.session_state["storage_debug"])
             key = data_fetch.resolve_api_key()
             if key:
                 r = f"{key[:4]}…{key[-4:]}" if len(key) > 8 else "***"

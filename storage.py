@@ -38,8 +38,8 @@ def _get_supabase_client():
     )
 
 
-def save(api_key: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Save user and workouts to Supabase. Returns debug info dict for UI."""
+def save(api_key: str, data: Dict[str, Any]) -> None:
+    """Save user and workouts to Supabase."""
     user = data.get("user", {})
     workouts = data.get("workouts_raw", {}).get("workouts", data.get("workouts", []))
     user_json = json.dumps(user)
@@ -53,28 +53,12 @@ def save(api_key: str, data: Dict[str, Any]) -> Dict[str, Any]:
         "updated_at": updated_at,
     }
 
-    use_supabase = _use_supabase()
-    debug = {
-        "save_called": True,
-        "use_supabase": use_supabase,
-        "SUPABASE_AVAILABLE": _SUPABASE_AVAILABLE,
-        "has_url": bool(os.environ.get("SUPABASE_URL")),
-        "has_key": bool(os.environ.get("SUPABASE_KEY")),
-        "api_key_hash": key_hash,
-        "user_json_len": len(user_json),
-        "workouts_json_len": len(workouts_json),
-        "updated_at": updated_at,
-        "success": False,
-        "error": None,
-    }
-    if use_supabase:
+    if _use_supabase():
         try:
             client = _get_supabase_client()
             client.table("hevy_cache").upsert(row, on_conflict="api_key_hash").execute()
-            debug["success"] = True
-        except Exception as e:
-            debug["error"] = str(e)
-    return debug
+        except Exception:
+            pass
 
 
 def load(api_key: str) -> Optional[Dict[str, Any]]:

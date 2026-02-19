@@ -31,33 +31,30 @@ def main() -> None:
             if not is_first_load:
                 st.cache_data.clear()
             data = data_fetch._fetch_user_and_workouts_impl(api_key, on_progress)
-            save_debug = storage.save(api_key, data)
-            st.session_state["storage_debug"] = save_debug
+            storage.save(api_key, data)
             st.session_state["hevy_data"] = data
             loading_placeholder.empty()
             st.rerun()
         except HevyApiError as exc:
             loading_placeholder.empty()
-            st.session_state["storage_debug"] = {"fetch_failed": True, "error": str(exc)}
             st.error(f"Error talking to Hevy API: {exc}")
-            with st.expander("Debug (fetch failed before save)", expanded=True):
-                st.json(st.session_state["storage_debug"])
             st.stop()
         except Exception as exc:
             loading_placeholder.empty()
-            st.session_state["storage_debug"] = {"fetch_failed": True, "error": str(exc), "type": type(exc).__name__}
             st.error(f"Unexpected error: {exc}")
-            with st.expander("Debug (error before save)", expanded=True):
-                st.json(st.session_state["storage_debug"])
             st.stop()
+
+    if st.session_state.get("fake_loading") and st.session_state.get("fake_loading_data"):
+        loading.render_fake_loading(duration_seconds=5.0)
+        st.session_state["hevy_data"] = st.session_state["fake_loading_data"]
+        st.session_state.pop("fake_loading", None)
+        st.session_state.pop("fake_loading_data", None)
+        st.rerun()
 
     data = st.session_state["hevy_data"]
     if data is None:
-        data = storage.load(api_key)
-        if data is not None:
-            st.session_state["hevy_data"] = data
-            st.rerun()
-        empty.render_empty_state()
+        empty.render_empty_state(api_key)
         return
 
+    st.session_state.pop("supabase_empty", None)
     dashboard.render_dashboard(data)
