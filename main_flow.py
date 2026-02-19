@@ -3,6 +3,7 @@
 import streamlit as st
 
 import data_fetch
+import storage
 from hevy_client import HevyApiError
 
 from views import empty, loading, dashboard
@@ -30,6 +31,7 @@ def main() -> None:
             if not is_first_load:
                 st.cache_data.clear()
             data = data_fetch._fetch_user_and_workouts_impl(api_key, on_progress)
+            storage.save(api_key, data)
             st.session_state["hevy_data"] = data
             loading_placeholder.empty()
             st.rerun()
@@ -40,6 +42,10 @@ def main() -> None:
 
     data = st.session_state["hevy_data"]
     if data is None:
+        data = storage.load(api_key)
+        if data is not None:
+            st.session_state["hevy_data"] = data
+            st.rerun()
         empty.render_empty_state()
         return
 

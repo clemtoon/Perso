@@ -142,6 +142,36 @@ def get_workout_by_id(api_key: str, workout_id: str) -> Dict[str, Any]:
     return data
 
 
+def get_workouts_count(api_key: str) -> Optional[int]:
+    """
+    Wrapper around GET /v1/workouts/count.
+    Returns total workout count for better progress estimates, or None if unavailable.
+    """
+    try:
+        data = hevy_get("/v1/workouts/count", api_key=api_key)
+        if isinstance(data, dict) and "count" in data:
+            c = data["count"]
+            return int(c) if c is not None else None
+        return None
+    except HevyApiError:
+        return None
+
+
+def get_workout_events(
+    api_key: str,
+    since: str,
+    page: int = 1,
+    limit: int = 50,
+) -> Any:
+    """
+    Wrapper around GET /v1/workouts/events.
+    Returns paged list of workout events (updates/deletes) since a given date.
+    Use for incremental sync: store workouts locally, then poll events to stay up to date.
+    """
+    params: Dict[str, Any] = {"since": since, "page": page, "limit": limit}
+    return hevy_get("/v1/workouts/events", api_key=api_key, params=params)
+
+
 def get_exercise_history(
     api_key: str,
     exercise_template_id: str,

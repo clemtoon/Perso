@@ -12,6 +12,7 @@ from hevy_client import (
     get_user_info,
     get_workouts,
     get_workout_by_id,
+    get_workouts_count,
 )
 
 from workout_parsing import extract_items, first_present
@@ -25,7 +26,7 @@ def resolve_api_key() -> Optional[str]:
 WORKOUTS_PER_PAGE = 50
 MAX_WORKOUT_PAGES = 500  # safety cap (~25k workouts)
 MAX_ENRICH_WORKOUTS = 100  # cap how many get_workout_by_id calls; None = no cap
-ENRICH_MAX_WORKERS = 1  # 1 = sequential (safest); 2–4 may be faster if API allows
+ENRICH_MAX_WORKERS = 2  # parallel enrichment (2–4 safe for Hevy API; 1 = sequential)
 
 
 def _fetch_user_and_workouts_impl(
@@ -42,6 +43,13 @@ def _fetch_user_and_workouts_impl(
     report(0.0, "Fetching user info…")
     user = get_user_info(api_key)
 
+    # Use /v1/workouts/count if available for accurate progress (see api.hevyapp.com/docs)
+    total_count = get_workouts_count(api_key) if api_key else None
+    if total_count is not None and total_count > 0:
+        total_pages = max(1, min((total_count + WORKOUTS_PER_PAGE - 1) // WORKOUTS_PER_PAGE, MAX_WORKOUT_PAGES))
+    else:
+        total_pages = 1
+
     report(0.05, "Fetching workout list…")
     first = get_workouts(api_key=api_key, page=1, limit=WORKOUTS_PER_PAGE)
     all_workouts = first.get("workouts", []) or extract_items(first)
@@ -51,8 +59,8 @@ def _fetch_user_and_workouts_impl(
             page_count = int(page_count)
         except (TypeError, ValueError):
             page_count = None
-
-    total_pages = page_count if page_count is not None else 1
+    if total_pages == 1 and page_count is not None:
+        total_pages = page_count
     for page in range(2, MAX_WORKOUT_PAGES + 1):
         resp = get_workouts(api_key=api_key, page=page, limit=WORKOUTS_PER_PAGE)
         more = resp.get("workouts", []) or extract_items(resp)
